@@ -141,6 +141,9 @@ type TotalTags struct{
 	TotalScore int `firestore:"total_score"`
 	Users map[string]int `firestore:"users"`
 }
+type CallRequest struct{
+	CallId string `json:"id,string"`
+}
 
 type User struct {
 	Id string `firestore:"id" json:"id"`
@@ -149,6 +152,8 @@ type User struct {
 	Stack Site `firestore:"stack" json:"stack"`
 	CallId string `firestore:"call_id" json:"call_id"`
 }
+
+
 
 func main() {
 	stackRedirect, err := url.Parse(stackRedirectUri)
@@ -180,10 +185,10 @@ func main() {
 	http.HandleFunc("/me", user)
 	
 	http.HandleFunc("/tags", getTags)
-	http.HandleFunc("/call", call)
+	http.HandleFunc("/call/", call)
 	
 	http.HandleFunc("/test/", test)
-	http.HandleFunc("/", genericHandler)
+	//http.HandleFunc("/", genericHandler)
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -196,10 +201,23 @@ func main() {
 }
 
 func call(w http.ResponseWriter, r *http.Request) {
-	r.ParseForm()
-
+	//r.ParseForm()
+	/*defer r.Body.Close()
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Print(body)
+	log.Print(r.Header)
+	var rq CallRequest
+	if err = json.Unmarshal(body, &rq); err != nil {
+		log.Fatal(err)
+	}*/
+	w.Header().Add("access-control-allow-origin", "*")
+	w.WriteHeader(200)
+	callId := strings.Split(strings.TrimSuffix(r.URL.Path, "/"), "/")[2]
 	userId := "personadelmonton@gmail.com" // for debugging purposes
-	client.Collection("user").Doc(string(userId)).Update(ctx, []firestore.Update{{Path: "call_id", Value: "15735a45-5024-410c-88ef-18f232953347"}})
+	client.Collection("user").Doc(string(userId)).Update(ctx, []firestore.Update{{Path: "call_id", Value: callId}})//"15735a45-5024-410c-88ef-18f232953347"}})
 }
 
 func getTags(w http.ResponseWriter, request *http.Request) {
@@ -590,7 +608,7 @@ func genericHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
 		return
 	}
-	path := strings.Split(strings.TrimSuffix(r.URL.Path, "/"), "/")[2:]
+	path := strings.Split(strings.TrimSuffix(r.URL.Path, "/"), "/")[1:]
 	//log.Printf("%+v\n", path)
 	var collection *firestore.CollectionRef
 	switch len(path) {
