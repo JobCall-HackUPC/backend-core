@@ -111,9 +111,35 @@ type GithubUserResponse struct {
 	} `json:"plan"`
 }
 
+type StackTopTags struct {
+	Items []struct {
+		UserId        int    `json:"user_id"`
+		AnswerCount   int    `json:"answer_count"`
+		AnswerScore   int    `json:"answer_score"`
+		QuestionCount int    `json:"question_count"`
+		QuestionScore int    `json:"question_score"`
+		TagName       string `json:"tag_name"`
+	} `json:"items"`
+	HasMore        bool `json:"has_more"`
+	QuotaMax       int  `json:"quota_max"`
+	QuotaRemaining int  `json:"quota_remaining"`
+}
+
 type Site struct {
-	UserId string `firestore:"userid" json:"userid"`
-	Token string `firestore:"token" json:"-"`//json:"token"` // do not return the token on json responses
+	UserId string   `firestore:"userid" json:"userid"`
+	Token string    `firestore:"token" json:"-"`//json:"token"` // do not return the token on json responses
+	Tags []UserTags `firestore:"tags" json:"tags"`
+}
+
+type UserTags struct{
+	TagName       string `firestore:"tag_name" json:"tag_name"`
+	Score 		  int `firestore:"score" json:"score"`
+}
+
+type TotalTags struct{
+	TagName string `firestore:"tag_name"`
+	TotalScore int `firestore:"total_score"`
+	Users map[string]int `firestore:"users"`
 }
 
 type User struct {
@@ -121,6 +147,7 @@ type User struct {
 	Tmp string `firestore:"tmp" json:"-"` // for code verification of oauth, ignored when parsed as json
 	Github Site `firestore:"github" json:"github"`
 	Stack Site `firestore:"stack" json:"stack"`
+	CallId string `firestore:"call_id" json:"call_id"`
 }
 
 func main() {
@@ -152,6 +179,9 @@ func main() {
 	http.HandleFunc("/githublogout", githubLogout)
 	http.HandleFunc("/me", user)
 	
+	http.HandleFunc("/tags", getTags)
+	http.HandleFunc("/call", call)
+	
 	http.HandleFunc("/test/", test)
 	http.HandleFunc("/", genericHandler)
 
@@ -165,10 +195,45 @@ func main() {
 	}
 }
 
+func call(w http.ResponseWriter, r *http.Request) {
+	r.ParseForm()
+
+	userId := "personadelmonton@gmail.com" // for debugging purposes
+	client.Collection("user").Doc(string(userId)).Update(ctx, []firestore.Update{{Path: "call_id", Value: "15735a45-5024-410c-88ef-18f232953347"}})
+}
+
+func getTags(w http.ResponseWriter, request *http.Request) {
+	docIter := client.Collection("tags").OrderBy("total_score", firestore.Desc).Limit(25).Documents(ctx)
+
+	tagList := make(map[string]int)
+	var tag TotalTags
+	for {
+		doc, err := docIter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := doc.DataTo(&tag); err != nil{
+			log.Fatal(err)
+		}
+		tagList[tag.TagName] = tag.TotalScore
+	}
+	j, err := json.Marshal(tagList)
+	if err != nil{
+		log.Fatal(err)
+	}
+	w.Header().Add("access-control-allow-origin", "*")
+	fmt.Fprintf(w, "%v", string(j))
+}
+
+
+
 func user(w http.ResponseWriter, r *http.Request) {
 	userId := r.Header.Get("mail")
 	if userId == ""{
-		userId = "1" //for testing purposes
+		userId = "a" //for testing purposes
 		//w.WriteHeader(404)
 		//return
 	}
@@ -190,13 +255,14 @@ func user(w http.ResponseWriter, r *http.Request) {
 		log.Fatal(err)
 	}
 	fmt.Fprintf(w, "%v", string(j))
+	go getUserStackTags(userInfo.Id)
 }
 
 func githubLogout(w http.ResponseWriter, r *http.Request) {
 	// Loading from firestore
 	userId := r.Header.Get("mail")
 	if userId == ""{
-		userId = "1" //for testing purposes
+		userId = "a" //for testing purposes
 		//w.WriteHeader(404)
 		//return
 	}
@@ -229,7 +295,7 @@ func stackLogout(w http.ResponseWriter, r *http.Request) {
 	// Loading from firestore
 	userId := r.Header.Get("mail")
 	if userId == ""{
-		userId = "1" //for testing purposes
+		userId = "a" //for testing purposes
 		//w.WriteHeader(404)
 		//return
 	}
@@ -259,7 +325,7 @@ func getStackURL (w http.ResponseWriter, r *http.Request){
 	state := uuid.New().String()
 	userId := r.Header.Get("mail")
 	if userId == ""{
-		userId = "1" //for testing purposes
+		userId = "a" //for testing purposes
 		//w.WriteHeader(404)
 		//return
 	}
@@ -281,7 +347,7 @@ func getGithubURL(w http.ResponseWriter, r *http.Request) {
 	state := uuid.New().String()
 	userId := r.Header.Get("mail")
 	if userId == ""{
-		userId = "1" //for testing purposes
+		userId = "a" //for testing purposes
 		//w.WriteHeader(404)
 		//return
 	}
@@ -456,7 +522,63 @@ func getGithubId(userId string){
 	client.Collection("user").Doc(userId).Update(ctx, []firestore.Update{{Path: "github.userid", Value: string(userid.Login)}})
 }
 
+func getUserStackTags(userId string) {
+	//filter := "!LnMTyEndI7V2SIJX2yEmMj"
+	doc, err := client.Collection("user").Doc(userId).Get(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var userInfo User
+	err = doc.DataTo(&userInfo)
+	if err != nil{
+		log.Fatal(err)
+	}
+	url := fmt.Sprintf("https://api.stackexchange.com/2.2/me/top-tags?key=%v&pagesize=100&site=stackoverflow&order=desc&sort=reputation&access_token=%v", stackKey, userInfo.Stack.Token)
+	resp, err := http.Get(url)
+	if err != nil{
+		log.Fatal(err)
+	}
 
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var stackTags StackTopTags
+	if err = json.Unmarshal(body, &stackTags); err != nil{
+		log.Fatal(err)
+	}
+
+	var tags []UserTags
+	for _,item := range stackTags.Items {
+		tags = append(tags, UserTags{TagName: item.TagName, Score: item.AnswerScore+item.QuestionScore})
+	}
+
+	// Adding tags to user
+	client.Collection("user").Doc(userId).Update(ctx, []firestore.Update{{Path: "stack.tags", Value: tags}})
+
+	// Adding tags to totals
+	for _,tag := range tags {
+		fTag := client.Collection("tags").Doc(tag.TagName)
+		_, err := fTag.Create(ctx, TotalTags{TagName: tag.TagName, TotalScore: tag.Score, Users: map[string]int{userId: tag.Score}})
+		if err != nil{
+			// Let's assume an error will only trigger when the tag already exists
+			oldTagResponse, err := client.Collection("tags").Doc(tag.TagName).Get(ctx)
+			if err != nil{
+				log.Fatal(err)
+			}
+			var oldTag TotalTags
+			if err = oldTagResponse.DataTo(&oldTag); err != nil{
+				log.Fatal(err)
+			}
+			var newScore int
+			if _, ok := oldTag.Users[userId]; !ok {
+				newScore = oldTag.TotalScore+tag.Score
+				client.Collection("tags").Doc(tag.TagName).Update(ctx, []firestore.Update{{Path: "total_score", Value: newScore}, {Path:"users", Value:  map[string]int{userId: tag.Score} }})
+			}
+		}
+	}
+}
 
 
 
